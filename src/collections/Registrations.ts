@@ -175,6 +175,9 @@ export const Registrations: CollectionConfig = {
     listSearchableFields: ['label', 'attendee.email'],
     description:
       'Bookings of an attendee into a session. Cancel instead of editing: a cancelled registration is final, register again to create a new one.',
+    components: {
+      beforeListTable: ['@/components/admin/CancelSelectedRegistrations#CancelSelectedRegistrations'],
+    },
   },
   defaultSort: '-registeredAt',
   access: {
