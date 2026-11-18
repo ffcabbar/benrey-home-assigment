@@ -1,0 +1,55 @@
+name: benrey
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: benrey
+      POSTGRES_PASSWORD: benrey_local_only
+      POSTGRES_DB: benrey
+    ports:
+      - '54329:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U benrey -d benrey']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: benrey_minio
+      MINIO_ROOT_PASSWORD: benrey_minio_local_only
+    ports:
+      - '9000:9000'
+      - '9001:9001'
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  minio-setup:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 benrey_minio benrey_minio_local_only &&
+      mc mb --ignore-existing local/benrey-media &&
+      mc mb --ignore-existing local/benrey-media-test &&
+      echo 'buckets ready'
+      "
+    restart: 'no'
+
+volumes:
+  pgdata:
+  miniodata:
