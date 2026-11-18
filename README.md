@@ -3,7 +3,7 @@
 An admin app for conference events, sessions, attendees and seat-limited registrations, built on
 Payload 3 inside Next.js with Postgres and S3 storage.
 
-Live: `https://<project>.vercel.app/admin` (placeholder). Admin and staff logins are sent with the
+Live: https://benrey-home-assigment.vercel.app/admin. Admin and staff logins are sent with the
 submission.
 
 ## Local setup
@@ -24,7 +24,7 @@ pnpm dev                   # http://localhost:3000/admin, logins from SEED_* in 
 1. Supabase: create a project, a private Storage bucket and S3 access keys.
 2. From your machine, with `DATABASE_URL` set to the session pooler (5432) or direct URL plus the
    S3, `PAYLOAD_SECRET` and `SEED_*` variables, run `pnpm migrate` and then `pnpm seed --reset`
-   (a few minutes against a remote database). Seed before the app goes live: on an empty database
+   (30–60 minutes against a remote database: every write is a network round trip). Seed before the app goes live: on an empty database
    the first account registered becomes admin.
 3. Vercel: import the repo and set `DATABASE_URL` (transaction pooler, 6543), `PAYLOAD_SECRET`, the
    five `S3_*` variables, `NEXT_PUBLIC_SERVER_URL` and optionally `ANTHROPIC_API_KEY`. Deploy.
