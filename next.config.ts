@@ -17,6 +17,8 @@ const nextConfig: NextConfig = {
       { source: '/admin/reset/:token*', destination: '/admin/login', permanent: false },
     ]
   },
+  // The dev-tools badge covers Payload's nav logout icon.
+  devIndicators: false,
   webpack: (webpackConfig) => {
     webpackConfig.resolve.extensionAlias = {
       '.cjs': ['.cts', '.cjs'],

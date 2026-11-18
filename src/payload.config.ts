@@ -32,6 +32,7 @@ export default buildConfig({
     meta: { titleSuffix: ' · Event Registration' },
     importMap: { baseDir: path.resolve(dirname) },
     components: {
+      actions: ['@/components/admin/LogoutAction#LogoutAction'],
       providers: ['@/components/admin/FieldHelpProvider#FieldHelpProvider'],
     },
   },
