@@ -79,6 +79,7 @@ describe('staff is refused (403) where the role matrix says so', () => {
   it('anonymous requests get nothing', async () => {
     expect((await rest('GET', '/events')).status).toBe(403)
     expect((await rest('POST', '/registrations/cancel', { body: { ids: [registrationId] } })).status).toBe(401)
+    expect((await rest('POST', '/field-help', { body: { collection: 'events', question: 'hi' } })).status).toBe(401)
   })
 })
 

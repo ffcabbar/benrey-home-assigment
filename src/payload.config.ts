@@ -5,6 +5,7 @@ import { buildConfig, type Config } from 'payload'
 import sharp from 'sharp'
 import { fileURLToPath } from 'url'
 
+import { fieldHelpEndpoint } from './ai/fieldHelp'
 import { AiUsage } from './collections/AiUsage'
 import { Attendees } from './collections/Attendees'
 import { Events } from './collections/Events'
@@ -30,8 +31,12 @@ export default buildConfig({
     user: Users.slug,
     meta: { titleSuffix: ' · Event Registration' },
     importMap: { baseDir: path.resolve(dirname) },
+    components: {
+      providers: ['@/components/admin/FieldHelpProvider#FieldHelpProvider'],
+    },
   },
   collections: [Events, Sessions, Attendees, Registrations, Media, Users, AiUsage],
+  endpoints: [fieldHelpEndpoint],
   upload: { limits: { fileSize: MEDIA_MAX_BYTES } },
   typescript: { outputFile: path.resolve(dirname, 'payload-types.ts') },
   graphQL: { disable: true },
