@@ -8,6 +8,7 @@ import {
   validateNewRegistration,
   type RegistrationStatus,
 } from '@/domain/registration'
+import { cancelRegistrationsEndpoint } from '@/endpoints/cancelRegistrations'
 import { assertRule, mapDbErrorsToResponse, RuleViolationError } from '@/lib/errors'
 import { relationId } from '@/lib/hooks'
 
@@ -182,6 +183,7 @@ export const Registrations: CollectionConfig = {
     update: canUpdateConfirmed,
     delete: isAdmin,
   },
+  endpoints: [cancelRegistrationsEndpoint],
   hooks: {
     beforeOperation: [rejectReassignment],
     beforeChange: [validateRegistration],
