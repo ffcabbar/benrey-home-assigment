@@ -10,6 +10,13 @@ const nextConfig: NextConfig = {
   // Stop `next dev` from writing an AI-assistant instructions file into the repo.
   agentRules: false,
   poweredByHeader: false,
+  // No email provider, so no password reset pages.
+  async redirects() {
+    return [
+      { source: '/admin/forgot', destination: '/admin/login', permanent: false },
+      { source: '/admin/reset/:token*', destination: '/admin/login', permanent: false },
+    ]
+  },
   webpack: (webpackConfig) => {
     webpackConfig.resolve.extensionAlias = {
       '.cjs': ['.cts', '.cjs'],

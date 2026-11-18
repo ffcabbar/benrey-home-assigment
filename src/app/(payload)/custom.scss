@@ -1,0 +1,4 @@
+// No email provider, so hide Payload's always-rendered "Forgot password?" link.
+.login__form a[href$='/forgot'] {
+  display: none;
+}
