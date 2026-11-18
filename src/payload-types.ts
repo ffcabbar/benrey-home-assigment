@@ -232,6 +232,14 @@ export interface Session {
    */
   title: string;
   /**
+   * Filled in automatically as "Session title — Event title", so sessions with the same name in different events can be told apart.
+   */
+  displayTitle?: string | null;
+  /**
+   * Title of the event this session belongs to.
+   */
+  eventTitle?: string | null;
+  /**
    * Room or stage inside the venue, e.g. "Hall A". Optional.
    */
   room?: string | null;
@@ -275,7 +283,7 @@ export interface Session {
 export interface Registration {
   id: number;
   /**
-   * Filled in automatically as "Attendee → Session".
+   * Filled in automatically as "Attendee → Session — Event".
    */
   label?: string | null;
   /**
@@ -286,6 +294,18 @@ export interface Registration {
    * The session to book. Its event must be published, the session must not have ended, it needs a free seat, and it must not overlap the attendee’s other sessions. Can’t be changed after saving.
    */
   session: number | Session;
+  /**
+   * Name of the attendee (list column).
+   */
+  attendeeName?: string | null;
+  /**
+   * Email of the attendee (used for search).
+   */
+  attendeeEmail?: string | null;
+  /**
+   * Session and event (list column).
+   */
+  sessionName?: string | null;
   /**
    * Confirmed holds a seat. Set to Cancelled to free the seat. Cancelling is final: a cancelled registration can’t be confirmed again.
    */
@@ -508,6 +528,8 @@ export interface EventsSelect<T extends boolean = true> {
 export interface SessionsSelect<T extends boolean = true> {
   event?: T;
   title?: T;
+  displayTitle?: T;
+  eventTitle?: T;
   room?: T;
   startsAt?: T;
   endsAt?: T;
@@ -538,6 +560,9 @@ export interface RegistrationsSelect<T extends boolean = true> {
   label?: T;
   attendee?: T;
   session?: T;
+  attendeeName?: T;
+  attendeeEmail?: T;
+  sessionName?: T;
   status?: T;
   registeredAt?: T;
   cancelledAt?: T;

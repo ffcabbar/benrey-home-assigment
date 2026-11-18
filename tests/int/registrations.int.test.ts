@@ -335,7 +335,7 @@ describe('other rules through Payload', () => {
   })
 
   it('sets registeredAt, createdBy and the label automatically', async () => {
-    const { session } = await createOpenSession(payload)
+    const { event, session } = await createOpenSession(payload)
     const [a] = await createAttendees(payload, 1)
     const users = await payload.find({ collection: 'users', where: { role: { equals: 'staff' } } })
     const staff = { ...users.docs[0], collection: 'users' as const }
@@ -348,6 +348,6 @@ describe('other rules through Payload', () => {
     })
     expect(reg.createdBy).toBe(staff.id)
     expect(Date.parse(reg.registeredAt!)).toBeGreaterThan(Date.now() - 60_000)
-    expect(reg.label).toBe(`${a.fullName} → Test session`)
+    expect(reg.label).toBe(`${a.fullName} → Test session — ${event.title}`)
   })
 })

@@ -1,10 +1,11 @@
 import type { CollectionConfig, PayloadRequest } from 'payload'
 
-import { isAdmin, isStaff } from '@/access/roles'
+import { isAdmin, isStaff, systemManaged } from '@/access/roles'
 import { checkCapacityFloor, checkCapacityValue, checkSessionWithinEvent } from '@/domain/registration'
 import { getDrizzle } from '@/lib/db'
 import { assertRule, mapDbErrorsToResponse } from '@/lib/errors'
 import { preventDeleteWhenReferenced, relationId } from '@/lib/hooks'
+import { ATTENDEE_SESSION_SEPARATOR, sessionDisplayTitle } from '@/lib/labels'
 import { sql } from '@payloadcms/db-postgres'
 
 export const countConfirmed = async (req: PayloadRequest, sessionId: number | string) => {
@@ -22,9 +23,10 @@ export const Sessions: CollectionConfig = {
   labels: { singular: 'Session', plural: 'Sessions' },
   admin: {
     group: 'Events',
-    useAsTitle: 'title',
-    defaultColumns: ['title', 'event', 'startsAt', 'capacity', 'seatsLeft'],
-    listSearchableFields: ['title', 'room'],
+    // Session titles repeat across events, so they show as "Session — Event".
+    useAsTitle: 'displayTitle',
+    defaultColumns: ['title', 'eventTitle', 'startsAt', 'capacity', 'seatsLeft'],
+    listSearchableFields: ['displayTitle', 'room'],
     description: 'Talks, workshops and other time slots inside an event. Each has a seat limit.',
   },
   defaultSort: 'startsAt',
@@ -40,17 +42,19 @@ export const Sessions: CollectionConfig = {
         const merged = { ...originalDoc, ...data }
         assertRule(checkCapacityValue(merged.capacity), { path: 'capacity', collection: 'sessions' })
 
+        let displayTitle: string | undefined
         const eventId = relationId(merged.event)
         if (eventId !== undefined) {
           const event = await req.payload.findByID({
             collection: 'events',
             id: eventId,
             depth: 0,
-            select: { startsAt: true, endsAt: true },
+            select: { startsAt: true, endsAt: true, title: true },
             req,
             overrideAccess: true,
           })
           assertRule(checkSessionWithinEvent(merged, event), { path: 'startsAt', collection: 'sessions' })
+          if (typeof merged.title === 'string') displayTitle = sessionDisplayTitle(merged.title, event.title)
         }
 
         if (operation === 'update' && originalDoc && merged.capacity !== originalDoc.capacity) {
@@ -60,17 +64,17 @@ export const Sessions: CollectionConfig = {
             collection: 'sessions',
           })
         }
-        return data
+        return displayTitle === undefined ? data : { ...data, displayTitle }
       },
     ],
     afterChange: [
       // Raw SQL inside the request transaction, so the labels change with the rename or not at all.
       async ({ doc, previousDoc, operation, req }) => {
-        if (operation !== 'update' || doc.title === previousDoc?.title) return doc
+        if (operation !== 'update' || doc.displayTitle === previousDoc?.displayTitle) return doc
         const db = await getDrizzle(req.payload, req)
         await db.execute(sql`
           UPDATE registrations r
-          SET label = a.full_name || ' → ' || ${doc.title}
+          SET label = a.full_name || ${ATTENDEE_SESSION_SEPARATOR} || ${doc.displayTitle}
           FROM attendees a
           WHERE r.session_id = ${doc.id} AND a.id = r.attendee_id`)
         return doc
@@ -104,6 +108,31 @@ export const Sessions: CollectionConfig = {
       type: 'text',
       required: true,
       admin: { description: 'Name of the talk or workshop, e.g. "Opening keynote".' },
+    },
+    {
+      name: 'displayTitle',
+      label: 'Title with event',
+      type: 'text',
+      index: true,
+      access: { create: systemManaged, update: systemManaged },
+      admin: {
+        readOnly: true,
+        position: 'sidebar',
+        description:
+          'Filled in automatically as "Session title — Event title", so sessions with the same name in different events can be told apart.',
+      },
+    },
+    {
+      name: 'eventTitle',
+      label: 'Event',
+      type: 'text',
+      virtual: 'event.title',
+      admin: {
+        readOnly: true,
+        // List column only (read on the server, so it shows at every screen width).
+        condition: () => false,
+        description: 'Title of the event this session belongs to.',
+      },
     },
     {
       name: 'room',

@@ -4,6 +4,7 @@ import { sql } from '@payloadcms/db-postgres'
 import { isAdmin, isStaff } from '@/access/roles'
 import { getDrizzle } from '@/lib/db'
 import { preventDeleteWhenReferenced } from '@/lib/hooks'
+import { ATTENDEE_SESSION_SEPARATOR } from '@/lib/labels'
 
 export const Attendees: CollectionConfig = {
   slug: 'attendees',
@@ -30,7 +31,7 @@ export const Attendees: CollectionConfig = {
         const db = await getDrizzle(req.payload, req)
         await db.execute(sql`
           UPDATE registrations r
-          SET label = ${doc.fullName} || ' → ' || s.title
+          SET label = ${doc.fullName} || ${ATTENDEE_SESSION_SEPARATOR} || coalesce(s.display_title, s.title)
           FROM sessions s
           WHERE r.attendee_id = ${doc.id} AND s.id = r.session_id`)
         return doc

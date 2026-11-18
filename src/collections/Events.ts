@@ -3,7 +3,11 @@ import type { CollectionConfig } from 'payload'
 import { isAdmin, isStaff } from '@/access/roles'
 import { checkEventStillContainsSessions, checkTimeRange } from '@/domain/registration'
 import { assertRule } from '@/lib/errors'
+import { sql } from '@payloadcms/db-postgres'
+
+import { getDrizzle } from '@/lib/db'
 import { preventDeleteWhenReferenced, slugify } from '@/lib/hooks'
+import { ATTENDEE_SESSION_SEPARATOR, SESSION_EVENT_SEPARATOR } from '@/lib/labels'
 
 export const Events: CollectionConfig = {
   slug: 'events',
@@ -47,6 +51,24 @@ export const Events: CollectionConfig = {
           assertRule(checkEventStillContainsSessions(merged, docs), { path: 'startsAt', collection: 'events' })
         }
         return data
+      },
+    ],
+    afterChange: [
+      // Raw SQL inside the request transaction: an event rename updates its sessions' titles and
+      // the registration labels built from them, or nothing.
+      async ({ doc, previousDoc, operation, req }) => {
+        if (operation !== 'update' || doc.title === previousDoc?.title) return doc
+        const db = await getDrizzle(req.payload, req)
+        await db.execute(sql`
+          UPDATE sessions
+          SET display_title = title || ${SESSION_EVENT_SEPARATOR} || ${doc.title}
+          WHERE event_id = ${doc.id}`)
+        await db.execute(sql`
+          UPDATE registrations r
+          SET label = a.full_name || ${ATTENDEE_SESSION_SEPARATOR} || s.display_title
+          FROM sessions s, attendees a
+          WHERE s.event_id = ${doc.id} AND r.session_id = s.id AND a.id = r.attendee_id`)
+        return doc
       },
     ],
     afterRead: [

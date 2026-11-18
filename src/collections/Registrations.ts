@@ -11,6 +11,7 @@ import {
 import { cancelRegistrationsEndpoint } from '@/endpoints/cancelRegistrations'
 import { assertRule, mapDbErrorsToResponse, RuleViolationError } from '@/lib/errors'
 import { relationId } from '@/lib/hooks'
+import { registrationLabel } from '@/lib/labels'
 
 const canUpdateConfirmed: Access = ({ req }) =>
   userIsStaff(req.user) ? { status: { equals: 'confirmed' } } : false
@@ -161,7 +162,7 @@ const validateRegistration: CollectionBeforeChangeHook = async ({ data, original
     registeredAt: now.toISOString(),
     cancelledAt: null,
     createdBy: user && user.collection === 'users' ? user.id : null,
-    label: `${attendee.fullName} → ${session.title}`,
+    label: registrationLabel(attendee.fullName, session.displayTitle ?? session.title),
   }
 }
 
@@ -171,8 +172,10 @@ export const Registrations: CollectionConfig = {
   admin: {
     group: 'People',
     useAsTitle: 'label',
-    defaultColumns: ['attendee', 'session', 'status', 'registeredAt'],
-    listSearchableFields: ['label', 'attendee.email'],
+    // Server-filled virtual columns: Payload's relationship cells load lazily and showed
+    // "<No Attendee>" on narrow screens.
+    defaultColumns: ['attendeeName', 'sessionName', 'status', 'registeredAt'],
+    listSearchableFields: ['label', 'attendeeEmail'],
     description:
       'Bookings of an attendee into a session. Cancel instead of editing: a cancelled registration is final, register again to create a new one.',
     components: {
@@ -195,12 +198,13 @@ export const Registrations: CollectionConfig = {
   fields: [
     {
       name: 'label',
+      label: 'Attendee, session or event',
       type: 'text',
       access: { create: systemManaged, update: systemManaged },
       admin: {
         readOnly: true,
         position: 'sidebar',
-        description: 'Filled in automatically as "Attendee → Session".',
+        description: 'Filled in automatically as "Attendee → Session — Event".',
       },
     },
     {
@@ -225,6 +229,27 @@ export const Registrations: CollectionConfig = {
         description:
           'The session to book. Its event must be published, the session must not have ended, it needs a free seat, and it must not overlap the attendee’s other sessions. Can’t be changed after saving.',
       },
+    },
+    {
+      name: 'attendeeName',
+      label: 'Attendee',
+      type: 'text',
+      virtual: 'attendee.fullName',
+      admin: { readOnly: true, condition: () => false, description: 'Name of the attendee (list column).' },
+    },
+    {
+      name: 'attendeeEmail',
+      label: 'Attendee email',
+      type: 'text',
+      virtual: 'attendee.email',
+      admin: { readOnly: true, condition: () => false, description: 'Email of the attendee (used for search).' },
+    },
+    {
+      name: 'sessionName',
+      label: 'Session',
+      type: 'text',
+      virtual: 'session.displayTitle',
+      admin: { readOnly: true, condition: () => false, description: 'Session and event (list column).' },
     },
     {
       name: 'status',

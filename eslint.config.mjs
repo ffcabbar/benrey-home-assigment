@@ -31,6 +31,7 @@ const eslintConfig = [
       'src/payload-generated-schema.ts',
       'src/app/(payload)/admin/importMap.js',
       'src/migrations/*_initial.ts',
+      'src/migrations/*_add_session_display_title.ts',
       'next-env.d.ts',
     ],
   },
