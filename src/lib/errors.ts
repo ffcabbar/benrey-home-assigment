@@ -32,6 +32,8 @@ export const DB_CONSTRAINTS = {
   sessionFullMessage: 'SESSION_FULL',
   capacityBelowConfirmedMessage: 'CAPACITY_BELOW_CONFIRMED',
   registrationCancelledMessage: 'REGISTRATION_CANCELLED',
+  attendeeOverlapMessage: 'ATTENDEE_OVERLAP',
+  sessionTimeConflictMessage: 'SESSION_TIME_CONFLICT',
 } as const
 
 type ErrorLike = {
@@ -67,6 +69,12 @@ export function mapDbError(error: unknown): RuleViolationError | null {
     const message = typeof link.message === 'string' ? link.message : ''
     if (message.includes(DB_CONSTRAINTS.sessionFullMessage)) {
       return new RuleViolationError('SESSION_FULL', MESSAGES.SESSION_FULL, 'database')
+    }
+    if (message.includes(DB_CONSTRAINTS.attendeeOverlapMessage)) {
+      return new RuleViolationError('SCHEDULE_CONFLICT', MESSAGES.SCHEDULE_CONFLICT, 'database')
+    }
+    if (message.includes(DB_CONSTRAINTS.sessionTimeConflictMessage)) {
+      return new RuleViolationError('SESSION_TIME_CONFLICT', MESSAGES.SESSION_TIME_CONFLICT, 'database')
     }
     if (message.includes(DB_CONSTRAINTS.capacityBelowConfirmedMessage)) {
       return new RuleViolationError(

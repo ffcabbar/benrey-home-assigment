@@ -34,6 +34,16 @@ describe('mapDbError', () => {
     expect(mapDbError(undefined)).toBeNull()
   })
 
+  it('maps the overlap guards to the domain messages', () => {
+    const overlap = mapDbError(new Error('ATTENDEE_OVERLAP: attendee 4 is already booked into overlapping session 9'))
+    expect(overlap).toMatchObject({
+      code: 'SCHEDULE_CONFLICT',
+      message: 'This attendee is already booked into another session at an overlapping time.',
+      source: 'database',
+    })
+    expect(mapDbError(new Error('SESSION_TIME_CONFLICT: x'))?.code).toBe('SESSION_TIME_CONFLICT')
+  })
+
   it('maps the capacity-floor and one-way-cancel triggers', () => {
     expect(mapDbError(new Error('CAPACITY_BELOW_CONFIRMED: session 1 has 5'))?.code).toBe('CAPACITY_BELOW_CONFIRMED')
     expect(mapDbError(new Error('REGISTRATION_CANCELLED: registration 9'))?.code).toBe('REGISTRATION_CANCELLED')

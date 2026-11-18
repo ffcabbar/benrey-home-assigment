@@ -2,7 +2,8 @@ import { sql } from '@payloadcms/db-postgres'
 import type { Payload } from 'payload'
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 
-import type { RuleViolationError } from '@/lib/errors'
+import { MESSAGES } from '@/domain/registration'
+import { mapDbError, type RuleViolationError } from '@/lib/errors'
 import { cancelRegistrations, registerAttendee } from '@/services/registrations'
 
 import {
@@ -117,6 +118,97 @@ describe('no duplicate confirmed registration (partial unique index)', () => {
         sql`INSERT INTO registrations (attendee_id, session_id, status) VALUES (${a.id}, ${session.id}, 'confirmed')`,
       ),
     ).rejects.toMatchObject({ cause: { code: '23505', constraint: 'registrations_one_confirmed_per_attendee_session' } })
+  })
+})
+
+describe('no overlapping bookings under concurrency (DB trigger, attendee row lock)', () => {
+  const HOUR = 60 * 60 * 1000
+  async function eventWithSessions(offsetsMin: Array<[number, number]>) {
+    const { event, session: first } = await createOpenSession(payload, { capacity: 50, durationHours: 1 })
+    const base = Date.parse(first.startsAt)
+    const others = []
+    for (const [startMin, minutes] of offsetsMin) {
+      others.push(
+        await payload.create({
+          collection: 'sessions',
+          data: {
+            event: event.id,
+            title: `Session +${startMin}m`,
+            startsAt: new Date(base + startMin * 60_000).toISOString(),
+            endsAt: new Date(base + (startMin + minutes) * 60_000).toISOString(),
+            capacity: 50,
+          },
+        }),
+      )
+    }
+    return { event, first, others, base }
+  }
+
+  it('the same attendee racing into two overlapping sessions: exactly one wins, 10 rounds', async () => {
+    const sources = new Set<string>()
+    for (let round = 0; round < 10; round++) {
+      const { first, others } = await eventWithSessions([[30, 60]])
+      const [a] = await createAttendees(payload, 1)
+      const results = await settle([
+        () => registerAttendee({ payload, attendeeId: a.id, sessionId: first.id }),
+        () => registerAttendee({ payload, attendeeId: a.id, sessionId: others[0].id }),
+      ])
+      expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1)
+      const [rejected] = rejections(results)
+      expect(rejected.code).toBe('SCHEDULE_CONFLICT')
+      sources.add(rejected.source)
+      const { totalDocs } = await payload.count({
+        collection: 'registrations',
+        where: { and: [{ attendee: { equals: a.id } }, { status: { equals: 'confirmed' } }] },
+      })
+      expect(totalDocs).toBe(1)
+    }
+    expect(sources.has('database')).toBe(true)
+  })
+
+  it('racing into back-to-back sessions: both succeed', async () => {
+    for (let round = 0; round < 3; round++) {
+      const { first, others } = await eventWithSessions([[60, 60]])
+      const [a] = await createAttendees(payload, 1)
+      const results = await settle([
+        () => registerAttendee({ payload, attendeeId: a.id, sessionId: first.id }),
+        () => registerAttendee({ payload, attendeeId: a.id, sessionId: others[0].id }),
+      ])
+      expect(results.every((r) => r.status === 'fulfilled')).toBe(true)
+    }
+  })
+
+  it('the trigger refuses an overlapping insert that bypasses Payload, and maps to the domain message', async () => {
+    const { first, others } = await eventWithSessions([[30, 60]])
+    const [a] = await createAttendees(payload, 1)
+    await registerAttendee({ payload, attendeeId: a.id, sessionId: first.id })
+    const error = await payload.db.drizzle
+      .execute(sql`INSERT INTO registrations (attendee_id, session_id, status) VALUES (${a.id}, ${others[0].id}, 'confirmed')`)
+      .then(() => null, (e: unknown) => e)
+    expect(error).toMatchObject({ cause: { code: 'BR004', message: expect.stringContaining('ATTENDEE_OVERLAP') } })
+    expect(mapDbError(error)).toMatchObject({ message: MESSAGES.SCHEDULE_CONFLICT, source: 'database' })
+  })
+
+  it('moving a session onto another booking of one of its attendees is refused; a free slot is fine', async () => {
+    const { first, others, base } = await eventWithSessions([[120, 60]])
+    const [a] = await createAttendees(payload, 1)
+    await registerAttendee({ payload, attendeeId: a.id, sessionId: first.id })
+    await registerAttendee({ payload, attendeeId: a.id, sessionId: others[0].id })
+
+    const moveOnto = payload.update({
+      collection: 'sessions',
+      id: others[0].id,
+      data: { startsAt: new Date(base + 30 * 60_000).toISOString(), endsAt: new Date(base + 90 * 60_000).toISOString() },
+    })
+    const error = await moveOnto.then(() => null, (e: unknown) => e)
+    expect(mapDbError(error)).toMatchObject({ code: 'SESSION_TIME_CONFLICT', source: 'database' })
+
+    const moved = await payload.update({
+      collection: 'sessions',
+      id: others[0].id,
+      data: { startsAt: new Date(base + 1 * HOUR).toISOString(), endsAt: new Date(base + 2 * HOUR).toISOString() },
+    })
+    expect(moved.startsAt).toBe(new Date(base + HOUR).toISOString())
   })
 })
 

@@ -3,7 +3,7 @@ import type { CollectionConfig, PayloadRequest } from 'payload'
 import { isAdmin, isStaff } from '@/access/roles'
 import { checkCapacityFloor, checkCapacityValue, checkSessionWithinEvent } from '@/domain/registration'
 import { getDrizzle } from '@/lib/db'
-import { assertRule } from '@/lib/errors'
+import { assertRule, mapDbErrorsToResponse } from '@/lib/errors'
 import { preventDeleteWhenReferenced, relationId } from '@/lib/hooks'
 import { sql } from '@payloadcms/db-postgres'
 
@@ -88,6 +88,7 @@ export const Sessions: CollectionConfig = {
     beforeDelete: [
       preventDeleteWhenReferenced([{ collection: 'registrations', field: 'session', label: 'registration(s)' }]),
     ],
+    afterError: [mapDbErrorsToResponse],
   },
   fields: [
     {
