@@ -20,6 +20,8 @@ export const Events: CollectionConfig = {
     description: 'Conferences and meetups. Each event has sessions that attendees register for.',
   },
   defaultSort: '-startsAt',
+  // Staff can only read events; a lock would only show them a "take over" prompt.
+  lockDocuments: false,
   access: {
     read: isStaff,
     create: isAdmin,

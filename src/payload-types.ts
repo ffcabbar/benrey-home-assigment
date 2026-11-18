@@ -434,24 +434,12 @@ export interface PayloadLockedDocument {
   id: number;
   document?:
     | ({
-        relationTo: 'events';
-        value: number | Event;
-      } | null)
-    | ({
-        relationTo: 'sessions';
-        value: number | Session;
-      } | null)
-    | ({
         relationTo: 'attendees';
         value: number | Attendee;
       } | null)
     | ({
         relationTo: 'registrations';
         value: number | Registration;
-      } | null)
-    | ({
-        relationTo: 'media';
-        value: number | Media;
       } | null)
     | ({
         relationTo: 'users';

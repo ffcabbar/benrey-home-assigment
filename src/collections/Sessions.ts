@@ -30,6 +30,8 @@ export const Sessions: CollectionConfig = {
     description: 'Talks, workshops and other time slots inside an event. Each has a seat limit.',
   },
   defaultSort: 'startsAt',
+  // Staff can only read sessions; a lock would only show them a "take over" prompt.
+  lockDocuments: false,
   access: {
     read: isStaff,
     create: isAdmin,

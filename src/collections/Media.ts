@@ -15,6 +15,8 @@ export const Media: CollectionConfig = {
     listSearchableFields: ['alt', 'filename'],
     description: 'Event banner images (JPEG, PNG or WebP, up to 2 MB). Files are stored in the S3 bucket.',
   },
+  // Staff can only read images; a lock would only show them a "take over" prompt.
+  lockDocuments: false,
   access: {
     read: isStaff,
     create: isAdmin,

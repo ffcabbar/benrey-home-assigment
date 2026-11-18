@@ -32,6 +32,7 @@ const eslintConfig = [
       'src/app/(payload)/admin/importMap.js',
       'src/migrations/*_initial.ts',
       'src/migrations/*_add_session_display_title.ts',
+      'src/migrations/*_disable_locks_on_read_only_collections.ts',
       'next-env.d.ts',
     ],
   },

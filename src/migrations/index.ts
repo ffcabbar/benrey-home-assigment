@@ -3,6 +3,7 @@ import * as migration_20261118_005045_add_registration_constraints from './20261
 import * as migration_20261118_101916_add_overlap_guard from './20261118_101916_add_overlap_guard';
 import * as migration_20261118_150457_add_session_display_title from './20261118_150457_add_session_display_title';
 import * as migration_20261118_150505_backfill_session_display_title from './20261118_150505_backfill_session_display_title';
+import * as migration_20261118_150507_disable_locks_on_read_only_collections from './20261118_150507_disable_locks_on_read_only_collections';
 
 export const migrations = [
   {
@@ -29,5 +30,10 @@ export const migrations = [
     up: migration_20261118_150505_backfill_session_display_title.up,
     down: migration_20261118_150505_backfill_session_display_title.down,
     name: '20261118_150505_backfill_session_display_title',
+  },
+  {
+    up: migration_20261118_150507_disable_locks_on_read_only_collections.up,
+    down: migration_20261118_150507_disable_locks_on_read_only_collections.down,
+    name: '20261118_150507_disable_locks_on_read_only_collections'
   },
 ];
