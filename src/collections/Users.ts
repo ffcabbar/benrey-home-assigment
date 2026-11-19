@@ -1,10 +1,61 @@
-import { APIError, type CollectionConfig, type PayloadRequest } from 'payload'
+import {
+  APIError,
+  type CollectionBeforeChangeHook,
+  type CollectionBeforeDeleteHook,
+  type CollectionBeforeOperationHook,
+  type CollectionConfig,
+  type PayloadRequest,
+} from 'payload'
 
 import { canAccessAdmin, canChangeRole, hiddenFromNonAdmins, isAdmin, isAdminOrSelf, ROLES } from '@/access/roles'
 
 const countAdmins = async (req: PayloadRequest) =>
   (await req.payload.count({ collection: 'users', where: { role: { equals: 'admin' } }, req, overrideAccess: true }))
     .totalDocs
+
+// No email provider: refuse before Payload creates a reset token.
+const refuseEmailPasswordReset: CollectionBeforeOperationHook = ({ args, operation }) => {
+  if (operation === 'forgotPassword' || operation === 'resetPassword') {
+    throw new APIError('Password reset by email is not available. Ask an admin to set a new password.', 403, null, true)
+  }
+  return args
+}
+
+const protectSelfAndLastAdmin: CollectionBeforeDeleteHook = async ({ id, req }) => {
+  if (req.user && String(req.user.id) === String(id)) {
+    throw new APIError("You can't delete your own account. Ask another admin to do it.", 400, null, true)
+  }
+  const target = await req.payload.findByID({ collection: 'users', id, depth: 0, req, overrideAccess: true })
+  if (target.role === 'admin' && (await countAdmins(req)) <= 1) {
+    throw new APIError("You can't delete the last admin. Make someone else an admin first.", 400, null, true)
+  }
+}
+
+// ai_usage.user_id is NOT NULL, so the rate-limit rows go first, in the same transaction.
+const deleteAssistantUsage: CollectionBeforeDeleteHook = async ({ id, req }) => {
+  await req.payload.delete({
+    collection: 'ai-usage',
+    where: { user: { equals: id } },
+    req,
+    overrideAccess: true,
+  })
+}
+
+const keepAtLeastOneAdmin: CollectionBeforeChangeHook = async ({ data, originalDoc, operation, req }) => {
+  if (operation === 'update' && originalDoc?.role === 'admin' && data.role && data.role !== 'admin') {
+    if ((await countAdmins(req)) <= 1) {
+      throw new APIError("You can't remove the last admin. Make someone else an admin first.", 400, null, true)
+    }
+  }
+  return data
+}
+
+// On an empty database the first account becomes admin, so a fresh deploy can be claimed.
+const makeFirstUserAdmin: CollectionBeforeChangeHook = async ({ data, operation, req }) => {
+  if (operation !== 'create') return data
+  const { totalDocs } = await req.payload.count({ collection: 'users', req, overrideAccess: true })
+  return totalDocs === 0 ? { ...data, role: 'admin' } : data
+}
 
 export const Users: CollectionConfig = {
   slug: 'users',
@@ -36,56 +87,10 @@ export const Users: CollectionConfig = {
     unlock: isAdmin,
   },
   hooks: {
-    beforeOperation: [
-      // No email provider: refuse before Payload creates a reset token.
-      ({ args, operation }) => {
-        if (operation === 'forgotPassword' || operation === 'resetPassword') {
-          throw new APIError(
-            'Password reset by email is not available. Ask an admin to set a new password.',
-            403,
-            null,
-            true,
-          )
-        }
-        return args
-      },
-    ],
-    beforeDelete: [
-      async ({ id, req }) => {
-        if (req.user && String(req.user.id) === String(id)) {
-          throw new APIError("You can't delete your own account. Ask another admin to do it.", 400, null, true)
-        }
-        const target = await req.payload.findByID({ collection: 'users', id, depth: 0, req, overrideAccess: true })
-        if (target.role === 'admin' && (await countAdmins(req)) <= 1) {
-          throw new APIError("You can't delete the last admin. Make someone else an admin first.", 400, null, true)
-        }
-      },
-      // ai_usage.user_id is NOT NULL, so the rate-limit rows go first, in the same transaction.
-      async ({ id, req }) => {
-        await req.payload.delete({
-          collection: 'ai-usage',
-          where: { user: { equals: id } },
-          req,
-          overrideAccess: true,
-        })
-      },
-    ],
-    beforeChange: [
-      async ({ data, originalDoc, operation, req }) => {
-        if (operation === 'update' && originalDoc?.role === 'admin' && data.role && data.role !== 'admin') {
-          if ((await countAdmins(req)) <= 1) {
-            throw new APIError("You can't remove the last admin. Make someone else an admin first.", 400, null, true)
-          }
-        }
-        return data
-      },
-      async ({ data, operation, req }) => {
-        if (operation !== 'create') return data
-        const { totalDocs } = await req.payload.count({ collection: 'users', req, overrideAccess: true })
-        if (totalDocs === 0) return { ...data, role: 'admin' }
-        return data
-      },
-    ],
+    beforeOperation: [refuseEmailPasswordReset],
+    // Order matters: the guard runs before the rate-limit rows are removed.
+    beforeDelete: [protectSelfAndLastAdmin, deleteAssistantUsage],
+    beforeChange: [keepAtLeastOneAdmin, makeFirstUserAdmin],
   },
   fields: [
     {

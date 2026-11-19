@@ -3,6 +3,7 @@ import 'dotenv/config'
 import { sql } from '@payloadcms/db-postgres'
 import { getPayload, type Payload } from 'payload'
 
+import { withoutSeatCounts } from '../src/lib/queries'
 import config from '../src/payload.config'
 import { cancelRegistrations, registerAttendee } from '../src/services/registrations'
 import { BANNER_COUNT, makeBanner } from './seed/banners'
@@ -117,7 +118,7 @@ async function main() {
         capacity: session.capacity,
       },
       depth: 0,
-      context: { skipSeatCount: true },
+      context: withoutSeatCounts(),
     })
     sessionIds.set(session.key, doc.id)
   })

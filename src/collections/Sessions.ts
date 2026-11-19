@@ -1,4 +1,9 @@
-import type { CollectionConfig, PayloadRequest } from 'payload'
+import type {
+  CollectionAfterChangeHook,
+  CollectionAfterReadHook,
+  CollectionBeforeChangeHook,
+  CollectionConfig,
+} from 'payload'
 
 import { isAdmin, isStaff, systemManaged } from '@/access/roles'
 import { checkCapacityFloor, checkCapacityValue, checkSessionWithinEvent } from '@/domain/registration'
@@ -6,16 +11,60 @@ import { getDrizzle } from '@/lib/db'
 import { assertRule, mapDbErrorsToResponse } from '@/lib/errors'
 import { preventDeleteWhenReferenced, relationId } from '@/lib/hooks'
 import { ATTENDEE_SESSION_SEPARATOR, sessionDisplayTitle } from '@/lib/labels'
+import { countConfirmedRegistrations } from '@/lib/queries'
 import { sql } from '@payloadcms/db-postgres'
 
-export const countConfirmed = async (req: PayloadRequest, sessionId: number | string) => {
-  const { totalDocs } = await req.payload.count({
-    collection: 'registrations',
-    where: { and: [{ session: { equals: sessionId } }, { status: { equals: 'confirmed' } }] },
-    req,
-    overrideAccess: true,
-  })
-  return totalDocs
+/**
+ * Checks capacity, that the session fits inside its event, and that capacity is not lowered below
+ * the confirmed registrations. Also fills `displayTitle` ("Session — Event").
+ */
+const validateSession: CollectionBeforeChangeHook = async ({ data, originalDoc, operation, req }) => {
+  const merged = { ...originalDoc, ...data }
+  assertRule(checkCapacityValue(merged.capacity), { path: 'capacity', collection: 'sessions' })
+
+  let displayTitle: string | undefined
+  const eventId = relationId(merged.event)
+  if (eventId !== undefined) {
+    const event = await req.payload.findByID({
+      collection: 'events',
+      id: eventId,
+      depth: 0,
+      select: { startsAt: true, endsAt: true, title: true },
+      req,
+      overrideAccess: true,
+    })
+    assertRule(checkSessionWithinEvent(merged, event), { path: 'startsAt', collection: 'sessions' })
+    if (typeof merged.title === 'string') displayTitle = sessionDisplayTitle(merged.title, event.title)
+  }
+
+  if (operation === 'update' && originalDoc && merged.capacity !== originalDoc.capacity) {
+    const confirmedCount = await countConfirmedRegistrations(req, originalDoc.id)
+    assertRule(checkCapacityFloor({ newCapacity: merged.capacity, confirmedCount }), {
+      path: 'capacity',
+      collection: 'sessions',
+    })
+  }
+  return displayTitle === undefined ? data : { ...data, displayTitle }
+}
+
+// Raw SQL inside the request transaction, so the labels change with the rename or not at all.
+const relabelRegistrationsOnRename: CollectionAfterChangeHook = async ({ doc, previousDoc, operation, req }) => {
+  if (operation !== 'update' || doc.displayTitle === previousDoc?.displayTitle) return doc
+  const db = await getDrizzle(req.payload, req)
+  await db.execute(sql`
+    UPDATE registrations r
+    SET label = a.full_name || ${ATTENDEE_SESSION_SEPARATOR} || ${doc.displayTitle}
+    FROM attendees a
+    WHERE r.session_id = ${doc.id} AND a.id = r.attendee_id`)
+  return doc
+}
+
+const addSeatCounts: CollectionAfterReadHook = async ({ doc, req, context }) => {
+  if (context?.skipSeatCount || doc?.id === undefined) return doc
+  const taken = await countConfirmedRegistrations(req, doc.id)
+  doc.seatsTaken = taken
+  doc.seatsLeft = typeof doc.capacity === 'number' ? Math.max(doc.capacity - taken, 0) : null
+  return doc
 }
 
 export const Sessions: CollectionConfig = {
@@ -39,58 +88,9 @@ export const Sessions: CollectionConfig = {
     delete: isAdmin,
   },
   hooks: {
-    beforeChange: [
-      async ({ data, originalDoc, operation, req }) => {
-        const merged = { ...originalDoc, ...data }
-        assertRule(checkCapacityValue(merged.capacity), { path: 'capacity', collection: 'sessions' })
-
-        let displayTitle: string | undefined
-        const eventId = relationId(merged.event)
-        if (eventId !== undefined) {
-          const event = await req.payload.findByID({
-            collection: 'events',
-            id: eventId,
-            depth: 0,
-            select: { startsAt: true, endsAt: true, title: true },
-            req,
-            overrideAccess: true,
-          })
-          assertRule(checkSessionWithinEvent(merged, event), { path: 'startsAt', collection: 'sessions' })
-          if (typeof merged.title === 'string') displayTitle = sessionDisplayTitle(merged.title, event.title)
-        }
-
-        if (operation === 'update' && originalDoc && merged.capacity !== originalDoc.capacity) {
-          const confirmedCount = await countConfirmed(req, originalDoc.id)
-          assertRule(checkCapacityFloor({ newCapacity: merged.capacity, confirmedCount }), {
-            path: 'capacity',
-            collection: 'sessions',
-          })
-        }
-        return displayTitle === undefined ? data : { ...data, displayTitle }
-      },
-    ],
-    afterChange: [
-      // Raw SQL inside the request transaction, so the labels change with the rename or not at all.
-      async ({ doc, previousDoc, operation, req }) => {
-        if (operation !== 'update' || doc.displayTitle === previousDoc?.displayTitle) return doc
-        const db = await getDrizzle(req.payload, req)
-        await db.execute(sql`
-          UPDATE registrations r
-          SET label = a.full_name || ${ATTENDEE_SESSION_SEPARATOR} || ${doc.displayTitle}
-          FROM attendees a
-          WHERE r.session_id = ${doc.id} AND a.id = r.attendee_id`)
-        return doc
-      },
-    ],
-    afterRead: [
-      async ({ doc, req, context }) => {
-        if (context?.skipSeatCount || doc?.id === undefined) return doc
-        const taken = await countConfirmed(req, doc.id)
-        doc.seatsTaken = taken
-        doc.seatsLeft = typeof doc.capacity === 'number' ? Math.max(doc.capacity - taken, 0) : null
-        return doc
-      },
-    ],
+    beforeChange: [validateSession],
+    afterChange: [relabelRegistrationsOnRename],
+    afterRead: [addSeatCounts],
     beforeDelete: [
       preventDeleteWhenReferenced([{ collection: 'registrations', field: 'session', label: 'registration(s)' }]),
     ],

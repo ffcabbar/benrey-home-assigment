@@ -1,4 +1,9 @@
-import type { CollectionConfig } from 'payload'
+import type {
+  CollectionAfterChangeHook,
+  CollectionAfterReadHook,
+  CollectionBeforeChangeHook,
+  CollectionConfig,
+} from 'payload'
 
 import { isAdmin, isStaff } from '@/access/roles'
 import { checkEventStillContainsSessions, checkTimeRange } from '@/domain/registration'
@@ -8,6 +13,60 @@ import { sql } from '@payloadcms/db-postgres'
 import { getDrizzle } from '@/lib/db'
 import { preventDeleteWhenReferenced, slugify } from '@/lib/hooks'
 import { ATTENDEE_SESSION_SEPARATOR, SESSION_EVENT_SEPARATOR } from '@/lib/labels'
+
+/** The event must end after it starts, and new dates must still contain all of its sessions. */
+const validateEventDates: CollectionBeforeChangeHook = async ({ data, originalDoc, operation, req }) => {
+  const merged = { ...originalDoc, ...data }
+  assertRule(checkTimeRange(merged, 'The event'), { path: 'endsAt', collection: 'events' })
+
+  const datesChanged =
+    operation === 'update' &&
+    originalDoc &&
+    (String(merged.startsAt) !== String(originalDoc.startsAt) || String(merged.endsAt) !== String(originalDoc.endsAt))
+  if (!datesChanged) return data
+
+  const { docs } = await req.payload.find({
+    collection: 'sessions',
+    where: { event: { equals: originalDoc.id } },
+    depth: 0,
+    limit: 0,
+    pagination: false,
+    select: { title: true, startsAt: true, endsAt: true },
+    req,
+    overrideAccess: true,
+  })
+  assertRule(checkEventStillContainsSessions(merged, docs), { path: 'startsAt', collection: 'events' })
+  return data
+}
+
+// Raw SQL inside the request transaction: an event rename updates its sessions' titles and
+// the registration labels built from them, or nothing.
+const retitleSessionsOnRename: CollectionAfterChangeHook = async ({ doc, previousDoc, operation, req }) => {
+  if (operation !== 'update' || doc.title === previousDoc?.title) return doc
+  const db = await getDrizzle(req.payload, req)
+  await db.execute(sql`
+    UPDATE sessions
+    SET display_title = title || ${SESSION_EVENT_SEPARATOR} || ${doc.title}
+    WHERE event_id = ${doc.id}`)
+  await db.execute(sql`
+    UPDATE registrations r
+    SET label = a.full_name || ${ATTENDEE_SESSION_SEPARATOR} || s.display_title
+    FROM sessions s, attendees a
+    WHERE s.event_id = ${doc.id} AND r.session_id = s.id AND a.id = r.attendee_id`)
+  return doc
+}
+
+const addSessionCount: CollectionAfterReadHook = async ({ doc, req, context }) => {
+  if (context?.skipSessionCount || doc?.id === undefined) return doc
+  const { totalDocs } = await req.payload.count({
+    collection: 'sessions',
+    where: { event: { equals: doc.id } },
+    req,
+    overrideAccess: true,
+  })
+  doc.sessionCount = totalDocs
+  return doc
+}
 
 export const Events: CollectionConfig = {
   slug: 'events',
@@ -29,63 +88,9 @@ export const Events: CollectionConfig = {
     delete: isAdmin,
   },
   hooks: {
-    beforeChange: [
-      async ({ data, originalDoc, operation, req }) => {
-        const merged = { ...originalDoc, ...data }
-        assertRule(checkTimeRange(merged, 'The event'), { path: 'endsAt', collection: 'events' })
-
-        const datesChanged =
-          operation === 'update' &&
-          originalDoc &&
-          (String(merged.startsAt) !== String(originalDoc.startsAt) ||
-            String(merged.endsAt) !== String(originalDoc.endsAt))
-        if (datesChanged) {
-          const { docs } = await req.payload.find({
-            collection: 'sessions',
-            where: { event: { equals: originalDoc.id } },
-            depth: 0,
-            limit: 0,
-            pagination: false,
-            select: { title: true, startsAt: true, endsAt: true },
-            req,
-            overrideAccess: true,
-          })
-          assertRule(checkEventStillContainsSessions(merged, docs), { path: 'startsAt', collection: 'events' })
-        }
-        return data
-      },
-    ],
-    afterChange: [
-      // Raw SQL inside the request transaction: an event rename updates its sessions' titles and
-      // the registration labels built from them, or nothing.
-      async ({ doc, previousDoc, operation, req }) => {
-        if (operation !== 'update' || doc.title === previousDoc?.title) return doc
-        const db = await getDrizzle(req.payload, req)
-        await db.execute(sql`
-          UPDATE sessions
-          SET display_title = title || ${SESSION_EVENT_SEPARATOR} || ${doc.title}
-          WHERE event_id = ${doc.id}`)
-        await db.execute(sql`
-          UPDATE registrations r
-          SET label = a.full_name || ${ATTENDEE_SESSION_SEPARATOR} || s.display_title
-          FROM sessions s, attendees a
-          WHERE s.event_id = ${doc.id} AND r.session_id = s.id AND a.id = r.attendee_id`)
-        return doc
-      },
-    ],
-    afterRead: [
-      async ({ doc, req, context }) => {
-        if (context?.skipSessionCount || doc?.id === undefined) return doc
-        const { totalDocs } = await req.payload.count({
-          collection: 'sessions',
-          where: { event: { equals: doc.id } },
-          req,
-          overrideAccess: true,
-        })
-        doc.sessionCount = totalDocs
-        return doc
-      },
-    ],
+    beforeChange: [validateEventDates],
+    afterChange: [retitleSessionsOnRename],
+    afterRead: [addSessionCount],
     beforeDelete: [preventDeleteWhenReferenced([{ collection: 'sessions', field: 'event', label: 'session(s)' }])],
   },
   fields: [

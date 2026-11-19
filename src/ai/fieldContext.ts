@@ -60,59 +60,72 @@ const fieldPermission = (perms: FieldPerm | undefined, name: string) => {
   return { read: isAllowed(entry.read), write: isAllowed(entry.update) || isAllowed(entry.create) }
 }
 
-function collect(fields: Field[], perms: FieldPerm | undefined, out: FieldInfo[]) {
-  for (const field of fields) {
-    if (field.type === 'row' || field.type === 'collapsible') {
-      collect(field.fields, perms, out)
-      continue
-    }
+type NamedField = Extract<Field, { name: string }>
+type Permission = ReturnType<typeof fieldPermission>
+
+/** The fields that hold data, with layout-only wrappers (rows, collapsibles, unnamed tabs) flattened away. */
+function dataFields(fields: Field[]): Field[] {
+  return fields.flatMap((field) => {
+    if (field.type === 'row' || field.type === 'collapsible') return dataFields(field.fields)
     if (field.type === 'tabs') {
-      for (const tab of field.tabs) {
-        if (!('name' in tab) || !tab.name) collect(tab.fields, perms, out)
-      }
-      continue
+      return field.tabs.flatMap((tab) => ('name' in tab && tab.name ? [] : dataFields(tab.fields)))
     }
-    if (field.type === 'ui' || !('name' in field) || !field.name) continue
-    if (SKIPPED_FIELD_NAMES.has(field.name)) continue
-    if (field.hidden || field.admin?.hidden || field.admin?.disabled) continue
+    return [field]
+  })
+}
 
-    const permission = fieldPermission(perms, field.name)
-    if (!permission.read) continue
+/** Named, visible fields that are not system timestamps. Permissions are checked separately. */
+function isShownField(field: Field): field is NamedField {
+  if (field.type === 'ui' || !('name' in field) || !field.name) return false
+  if (SKIPPED_FIELD_NAMES.has(field.name)) return false
+  return !(field.hidden || field.admin?.hidden || field.admin?.disabled)
+}
 
-    const admin = (field.admin ?? {}) as { description?: unknown; readOnly?: boolean }
-    const info: FieldInfo = {
-      name: field.name,
-      label: textOf(field.label) ?? humanize(field.name),
-      type: field.type,
-      required: 'required' in field && field.required === true,
-      editable: permission.write && !admin.readOnly && !('virtual' in field && field.virtual),
-    }
-    const description = textOf(admin.description)
-    if (description) info.description = description
-    if ('virtual' in field && field.virtual) info.calculated = true
-
-    if (field.type === 'select' || field.type === 'radio') {
-      info.options = field.options.map((option) =>
-        typeof option === 'string' ? option : `${option.value} (${textOf(option.label) ?? option.value})`,
-      )
-    }
-    if (field.type === 'number') {
-      if (typeof field.min === 'number') info.min = field.min
-      if (typeof field.max === 'number') info.max = field.max
-    }
-    if (field.type === 'text' || field.type === 'textarea') {
-      if (typeof field.minLength === 'number') info.minLength = field.minLength
-      if (typeof field.maxLength === 'number') info.maxLength = field.maxLength
-    }
-    if (field.type === 'relationship' || field.type === 'upload') {
-      info.relatesTo = Array.isArray(field.relationTo) ? field.relationTo.join(', ') : field.relationTo
-    }
-    if (field.type === 'join') {
-      info.relatesTo = Array.isArray(field.collection) ? field.collection.join(', ') : field.collection
-      info.editable = false
-    }
-    out.push(info)
+function describeField(field: NamedField, permission: Permission): FieldInfo {
+  const admin = (field.admin ?? {}) as { description?: unknown; readOnly?: boolean }
+  const isVirtual = 'virtual' in field && !!field.virtual
+  const info: FieldInfo = {
+    name: field.name,
+    label: textOf(field.label) ?? humanize(field.name),
+    type: field.type,
+    required: 'required' in field && field.required === true,
+    editable: permission.write && !admin.readOnly && !isVirtual,
   }
+  const description = textOf(admin.description)
+  if (description) info.description = description
+  if (isVirtual) info.calculated = true
+
+  if (field.type === 'select' || field.type === 'radio') {
+    info.options = field.options.map((option) =>
+      typeof option === 'string' ? option : `${option.value} (${textOf(option.label) ?? option.value})`,
+    )
+  }
+  if (field.type === 'number') {
+    if (typeof field.min === 'number') info.min = field.min
+    if (typeof field.max === 'number') info.max = field.max
+  }
+  if (field.type === 'text' || field.type === 'textarea') {
+    if (typeof field.minLength === 'number') info.minLength = field.minLength
+    if (typeof field.maxLength === 'number') info.maxLength = field.maxLength
+  }
+  if (field.type === 'relationship' || field.type === 'upload') {
+    info.relatesTo = Array.isArray(field.relationTo) ? field.relationTo.join(', ') : field.relationTo
+  }
+  if (field.type === 'join') {
+    info.relatesTo = Array.isArray(field.collection) ? field.collection.join(', ') : field.collection
+    info.editable = false
+  }
+  return info
+}
+
+/** What the assistant is told about each field this user can read. */
+function describeFields(fields: Field[], perms: FieldPerm | undefined): FieldInfo[] {
+  return dataFields(fields)
+    .filter(isShownField)
+    .flatMap((field) => {
+      const permission = fieldPermission(perms, field.name)
+      return permission.read ? [describeField(field, permission)] : []
+    })
 }
 
 export function buildFormContext(
@@ -120,8 +133,6 @@ export function buildFormContext(
   permissions: SanitizedCollectionPermission | undefined,
 ): FormContext | null {
   if (!permissions || !isAllowed(permissions.read)) return null
-  const fields: FieldInfo[] = []
-  collect(collection.fields, permissions.fields, fields)
   return {
     collection: collection.slug,
     label: textOf(collection.labels?.singular) ?? humanize(collection.slug),
@@ -131,7 +142,7 @@ export function buildFormContext(
       update: isAllowed(permissions.update),
       delete: isAllowed(permissions.delete),
     },
-    fields,
+    fields: describeFields(collection.fields, permissions.fields),
     rules: COLLECTION_RULES[collection.slug as FieldHelpCollection] ?? [],
   }
 }

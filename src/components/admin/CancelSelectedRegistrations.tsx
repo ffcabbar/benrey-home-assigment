@@ -6,6 +6,15 @@ import React, { useState } from 'react'
 
 const MODAL_SLUG = 'cancel-selected-registrations'
 
+/** The line next to the button: what will happen with the current selection. */
+function bulkCancelHint({ acrossPages, matching, selected }: { acrossPages: boolean; matching: number; selected: number }) {
+  if (acrossPages) {
+    return `All ${matching} matching rows are selected. Cancelling works on the rows of the current page: untick "select all" first.`
+  }
+  if (selected > 0) return `${selected} selected. Already cancelled rows are skipped.`
+  return 'Tick registrations to cancel several at once. Already cancelled rows are skipped.'
+}
+
 export function CancelSelectedRegistrations() {
   const { selectedIDs, selectAll, setSelection, count } = useSelection()
   const { openModal } = useModal()
@@ -55,9 +64,7 @@ export function CancelSelectedRegistrations() {
     }
   }
 
-  let hint = 'Tick registrations to cancel several at once. Already cancelled rows are skipped.'
-  if (acrossPages) hint = `All ${count} matching rows are selected. Cancelling works on the rows of the current page: untick "select all" first.`
-  else if (selected > 0) hint = `${selected} selected. Already cancelled rows are skipped.`
+  const hint = bulkCancelHint({ acrossPages, matching: count, selected })
 
   return (
     <div

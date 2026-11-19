@@ -1,10 +1,22 @@
-import type { CollectionConfig } from 'payload'
+import type { CollectionAfterChangeHook, CollectionConfig } from 'payload'
 import { sql } from '@payloadcms/db-postgres'
 
 import { isAdmin, isStaff } from '@/access/roles'
 import { getDrizzle } from '@/lib/db'
 import { preventDeleteWhenReferenced } from '@/lib/hooks'
 import { ATTENDEE_SESSION_SEPARATOR } from '@/lib/labels'
+
+// Raw SQL inside the request transaction, so the labels change with the rename or not at all.
+const relabelRegistrationsOnRename: CollectionAfterChangeHook = async ({ doc, previousDoc, operation, req }) => {
+  if (operation !== 'update' || doc.fullName === previousDoc?.fullName) return doc
+  const db = await getDrizzle(req.payload, req)
+  await db.execute(sql`
+    UPDATE registrations r
+    SET label = ${doc.fullName} || ${ATTENDEE_SESSION_SEPARATOR} || coalesce(s.display_title, s.title)
+    FROM sessions s
+    WHERE r.attendee_id = ${doc.id} AND s.id = r.session_id`)
+  return doc
+}
 
 export const Attendees: CollectionConfig = {
   slug: 'attendees',
@@ -24,19 +36,7 @@ export const Attendees: CollectionConfig = {
     delete: isAdmin,
   },
   hooks: {
-    afterChange: [
-      // Raw SQL inside the request transaction, so the labels change with the rename or not at all.
-      async ({ doc, previousDoc, operation, req }) => {
-        if (operation !== 'update' || doc.fullName === previousDoc?.fullName) return doc
-        const db = await getDrizzle(req.payload, req)
-        await db.execute(sql`
-          UPDATE registrations r
-          SET label = ${doc.fullName} || ${ATTENDEE_SESSION_SEPARATOR} || coalesce(s.display_title, s.title)
-          FROM sessions s
-          WHERE r.attendee_id = ${doc.id} AND s.id = r.session_id`)
-        return doc
-      },
-    ],
+    afterChange: [relabelRegistrationsOnRename],
     beforeDelete: [
       preventDeleteWhenReferenced([{ collection: 'registrations', field: 'attendee', label: 'registration(s)' }]),
     ],

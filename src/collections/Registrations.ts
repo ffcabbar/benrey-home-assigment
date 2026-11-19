@@ -1,4 +1,10 @@
-import type { Access, CollectionBeforeChangeHook, CollectionBeforeOperationHook, CollectionConfig } from 'payload'
+import type {
+  Access,
+  CollectionBeforeChangeHook,
+  CollectionBeforeOperationHook,
+  CollectionConfig,
+  PayloadRequest,
+} from 'payload'
 
 import { isAdmin, isStaff, systemManaged, userIsStaff } from '@/access/roles'
 import {
@@ -6,12 +12,16 @@ import {
   checkRegistrationUpdate,
   IMMUTABLE_MESSAGE,
   validateNewRegistration,
+  type ConfirmedBooking,
+  type ID,
+  type RegistrationSnapshot,
   type RegistrationStatus,
 } from '@/domain/registration'
 import { cancelRegistrationsEndpoint } from '@/endpoints/cancelRegistrations'
 import { assertRule, mapDbErrorsToResponse, RuleViolationError } from '@/lib/errors'
 import { relationId } from '@/lib/hooks'
 import { registrationLabel } from '@/lib/labels'
+import { countConfirmedRegistrations, withoutSeatCounts } from '@/lib/queries'
 
 const canUpdateConfirmed: Access = ({ req }) =>
   userIsStaff(req.user) ? { status: { equals: 'confirmed' } } : false
@@ -21,6 +31,12 @@ const clockFrom = (context: Record<string, unknown> | undefined): Date => {
   const pinned = context?.registrationClock
   return pinned instanceof Date && Number.isFinite(pinned.getTime()) ? pinned : new Date()
 }
+
+const snapshotOf = (doc: { attendee?: unknown; session?: unknown; status?: unknown }): RegistrationSnapshot => ({
+  attendeeId: relationId(doc.attendee)!,
+  sessionId: relationId(doc.session)!,
+  status: doc.status as RegistrationStatus,
+})
 
 // Field access already ignores attendee/session on update; this turns that silent no-op into a 400.
 const rejectReassignment: CollectionBeforeOperationHook = async ({ args, operation, req }) => {
@@ -38,7 +54,7 @@ const rejectReassignment: CollectionBeforeOperationHook = async ({ args, operati
     .findByID({ collection: 'registrations', id, depth: 0, req, overrideAccess: true, select: { attendee: true, session: true } })
     .catch(() => null)
   if (!current) return args
-  const previous = { attendeeId: relationId(current.attendee)!, sessionId: relationId(current.session)!, status: 'confirmed' as const }
+  const previous = { ...snapshotOf(current), status: 'confirmed' as const }
   assertRule(
     checkRegistrationUpdate(previous, {
       attendeeId: attendee ?? previous.attendeeId,
@@ -49,35 +65,9 @@ const rejectReassignment: CollectionBeforeOperationHook = async ({ args, operati
   return args
 }
 
-const validateRegistration: CollectionBeforeChangeHook = async ({ data, originalDoc, operation, req, context }) => {
-  const now = clockFrom(context)
-
-  if (operation === 'update') {
-    if (!originalDoc) return data
-    const previous = {
-      attendeeId: relationId(originalDoc.attendee)!,
-      sessionId: relationId(originalDoc.session)!,
-      status: originalDoc.status as RegistrationStatus,
-    }
-    const next = {
-      attendeeId: relationId(data.attendee) ?? previous.attendeeId,
-      sessionId: relationId(data.session) ?? previous.sessionId,
-      status: (data.status ?? previous.status) as RegistrationStatus,
-    }
-    assertRule(checkRegistrationUpdate(previous, next))
-    if (previous.status === 'confirmed' && next.status === 'cancelled') {
-      return { ...data, status: 'cancelled', cancelledAt: now.toISOString() }
-    }
-    return data
-  }
-
-  assertRule(checkInitialStatus(data.status))
-  const attendeeId = relationId(data.attendee)
-  const sessionId = relationId(data.session)
-  if (attendeeId === undefined || sessionId === undefined) return data
-
+/** Everything the booking rules need, read in the request's transaction. */
+async function loadBookingFacts(req: PayloadRequest, attendeeId: ID, sessionId: ID) {
   // Sequential on purpose: inside a transaction all queries share one connection.
-  const readCtx = { skipSeatCount: true }
   const attendee = await req.payload.findByID({
     collection: 'attendees',
     id: attendeeId,
@@ -92,7 +82,7 @@ const validateRegistration: CollectionBeforeChangeHook = async ({ data, original
     depth: 0,
     req,
     overrideAccess: true,
-    context: readCtx,
+    context: withoutSeatCounts(),
   })
   const event = await req.payload.findByID({
     collection: 'events',
@@ -102,12 +92,13 @@ const validateRegistration: CollectionBeforeChangeHook = async ({ data, original
     overrideAccess: true,
     select: { status: true },
   })
-  const confirmed = await req.payload.count({
-    collection: 'registrations',
-    where: { and: [{ session: { equals: sessionId } }, { status: { equals: 'confirmed' } }] },
-    req,
-    overrideAccess: true,
-  })
+  const confirmedCount = await countConfirmedRegistrations(req, sessionId)
+  const attendeeBookings = await loadConfirmedBookings(req, attendeeId)
+  return { attendee, session, event, confirmedCount, attendeeBookings }
+}
+
+/** The sessions an attendee is currently confirmed for. */
+async function loadConfirmedBookings(req: PayloadRequest, attendeeId: ID): Promise<ConfirmedBooking[]> {
   const bookings = await req.payload.find({
     collection: 'registrations',
     where: { and: [{ attendee: { equals: attendeeId } }, { status: { equals: 'confirmed' } }] },
@@ -118,23 +109,53 @@ const validateRegistration: CollectionBeforeChangeHook = async ({ data, original
     req,
     overrideAccess: true,
   })
-  const bookedSessionIds = bookings.docs.map((b) => relationId(b.session)!).filter((id) => id !== undefined)
-  const bookedSessions = bookedSessionIds.length
-    ? (
-        await req.payload.find({
-          collection: 'sessions',
-          where: { id: { in: bookedSessionIds } },
-          depth: 0,
-          limit: 0,
-          pagination: false,
-          select: { title: true, startsAt: true, endsAt: true },
-          req,
-          overrideAccess: true,
-          context: readCtx,
-        })
-      ).docs
-    : []
+  const sessionIds = bookings.docs.map((b) => relationId(b.session)!).filter((id) => id !== undefined)
+  if (sessionIds.length === 0) return []
+  const { docs } = await req.payload.find({
+    collection: 'sessions',
+    where: { id: { in: sessionIds } },
+    depth: 0,
+    limit: 0,
+    pagination: false,
+    select: { title: true, startsAt: true, endsAt: true },
+    req,
+    overrideAccess: true,
+    context: withoutSeatCounts(),
+  })
+  return docs.map((s) => ({ sessionId: s.id, title: s.title, startsAt: s.startsAt, endsAt: s.endsAt }))
+}
 
+/** Updates may only cancel a confirmed registration; cancelling stamps `cancelledAt`. */
+function applyStatusChange(
+  data: Record<string, unknown>,
+  originalDoc: Record<string, unknown>,
+  now: Date,
+): Record<string, unknown> {
+  const previous = snapshotOf(originalDoc)
+  const next = {
+    attendeeId: relationId(data.attendee) ?? previous.attendeeId,
+    sessionId: relationId(data.session) ?? previous.sessionId,
+    status: (data.status ?? previous.status) as RegistrationStatus,
+  }
+  assertRule(checkRegistrationUpdate(previous, next))
+  if (previous.status === 'confirmed' && next.status === 'cancelled') {
+    return { ...data, status: 'cancelled', cancelledAt: now.toISOString() }
+  }
+  return data
+}
+
+/** Runs the booking rules for a new registration and fills its system-managed fields. */
+async function confirmNewRegistration(
+  data: Record<string, unknown>,
+  req: PayloadRequest,
+  now: Date,
+): Promise<Record<string, unknown>> {
+  assertRule(checkInitialStatus(data.status as string | undefined))
+  const attendeeId = relationId(data.attendee)
+  const sessionId = relationId(data.session)
+  if (attendeeId === undefined || sessionId === undefined) return data
+
+  const { attendee, session, event, confirmedCount, attendeeBookings } = await loadBookingFacts(req, attendeeId, sessionId)
   assertRule(
     validateNewRegistration({
       now,
@@ -144,14 +165,9 @@ const validateRegistration: CollectionBeforeChangeHook = async ({ data, original
         startsAt: session.startsAt,
         endsAt: session.endsAt,
         capacity: session.capacity,
-        confirmedCount: confirmed.totalDocs,
+        confirmedCount,
       },
-      attendeeBookings: bookedSessions.map((s) => ({
-        sessionId: s.id,
-        title: s.title,
-        startsAt: s.startsAt,
-        endsAt: s.endsAt,
-      })),
+      attendeeBookings,
     }),
   )
 
@@ -164,6 +180,12 @@ const validateRegistration: CollectionBeforeChangeHook = async ({ data, original
     createdBy: user && user.collection === 'users' ? user.id : null,
     label: registrationLabel(attendee.fullName, session.displayTitle ?? session.title),
   }
+}
+
+const validateRegistration: CollectionBeforeChangeHook = async ({ data, originalDoc, operation, req, context }) => {
+  const now = clockFrom(context)
+  if (operation === 'update') return originalDoc ? applyStatusChange(data, originalDoc, now) : data
+  return confirmNewRegistration(data, req, now)
 }
 
 export const Registrations: CollectionConfig = {

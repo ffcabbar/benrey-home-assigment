@@ -1,9 +1,17 @@
-import { APIError, type CollectionConfig } from 'payload'
+import { APIError, type CollectionBeforeOperationHook, type CollectionConfig } from 'payload'
 
 import { isAdmin, isStaff } from '@/access/roles'
 
 export const MEDIA_MAX_BYTES = 2 * 1024 * 1024
 export const MEDIA_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp']
+
+// The body-parser limit only covers REST uploads; this also covers the Local API.
+const rejectOversizedUpload: CollectionBeforeOperationHook = ({ args, operation, req }) => {
+  if ((operation === 'create' || operation === 'update') && req.file && req.file.size > MEDIA_MAX_BYTES) {
+    throw new APIError('Images must be 2 MB or smaller.', 400, null, true)
+  }
+  return args
+}
 
 export const Media: CollectionConfig = {
   slug: 'media',
@@ -30,14 +38,7 @@ export const Media: CollectionConfig = {
     focalPoint: false,
   },
   hooks: {
-    beforeOperation: [
-      // The body-parser limit only covers REST uploads; this also covers the Local API.
-      ({ operation, req }) => {
-        if ((operation === 'create' || operation === 'update') && req.file && req.file.size > MEDIA_MAX_BYTES) {
-          throw new APIError('Images must be 2 MB or smaller.', 400, null, true)
-        }
-      },
-    ],
+    beforeOperation: [rejectOversizedUpload],
   },
   fields: [
     {

@@ -46,6 +46,29 @@ type State =
   | { kind: 'answer'; text: string }
   | { kind: 'notice'; text: string }
 
+/** Sends one question and turns every outcome (answer, rate limit, bad input, outage) into what the widget shows. */
+async function askAboutForm(url: string, collection: string, question: string): Promise<State> {
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ collection, question }),
+    })
+    const body = (await response.json().catch(() => ({}))) as { answer?: string; error?: string; message?: string }
+    if (response.ok && typeof body.answer === 'string') return { kind: 'answer', text: body.answer }
+    if (response.status === 429) {
+      return { kind: 'notice', text: 'You have asked a lot of questions this hour. Try again later — hints are shown under each field.' }
+    }
+    if (response.status === 400) {
+      return { kind: 'notice', text: body.message ?? 'Please rephrase the question (1–500 characters).' }
+    }
+    return { kind: 'notice', text: OFFLINE_MESSAGE }
+  } catch {
+    return { kind: 'notice', text: OFFLINE_MESSAGE }
+  }
+}
+
 function FieldHelpWidget({ slug }: { slug: string }) {
   const {
     config: {
@@ -70,26 +93,7 @@ function FieldHelpWidget({ slug }: { slug: string }) {
     const trimmed = question.trim()
     if (!trimmed || state.kind === 'loading') return
     setState({ kind: 'loading' })
-    try {
-      const response = await fetch(`${serverURL}${api}/field-help`, {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ collection: slug, question: trimmed }),
-      })
-      const body = (await response.json().catch(() => ({}))) as { answer?: string; error?: string; message?: string }
-      if (response.ok && typeof body.answer === 'string') {
-        setState({ kind: 'answer', text: body.answer })
-      } else if (response.status === 429) {
-        setState({ kind: 'notice', text: 'You have asked a lot of questions this hour. Try again later — hints are shown under each field.' })
-      } else if (response.status === 400) {
-        setState({ kind: 'notice', text: body.message ?? 'Please rephrase the question (1–500 characters).' })
-      } else {
-        setState({ kind: 'notice', text: OFFLINE_MESSAGE })
-      }
-    } catch {
-      setState({ kind: 'notice', text: OFFLINE_MESSAGE })
-    }
+    setState(await askAboutForm(`${serverURL}${api}/field-help`, slug, trimmed))
   }
 
   return (

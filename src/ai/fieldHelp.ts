@@ -1,7 +1,7 @@
 import { addDataAndFileToRequest, getAccessResults, type Endpoint, type PayloadHandler, type PayloadRequest } from 'payload'
 import { z } from 'zod'
 
-import { userIsStaff } from '@/access/roles'
+import { requireStaff } from '@/endpoints/guards'
 import { getLLMConfig } from '@/lib/env'
 import { askClaude, createAnthropicClient, LLMAuthError, LLMUnavailableError, type MessagesClient } from '@/lib/llm'
 
@@ -47,8 +47,8 @@ export const buildContextFromPayload: FieldHelpDeps['buildContext'] = async (req
 
 export function createFieldHelpHandler(deps: FieldHelpDeps): PayloadHandler {
   return async (req) => {
-    if (!req.user) return json({ error: 'unauthorized' }, 401)
-    if (!userIsStaff(req.user)) return json({ error: 'forbidden' }, 403)
+    const auth = requireStaff(req)
+    if (!auth.ok) return auth.response
 
     try {
       await addDataAndFileToRequest(req)
@@ -67,7 +67,7 @@ export function createFieldHelpHandler(deps: FieldHelpDeps): PayloadHandler {
     const context = await deps.buildContext(req, collection)
     if (!context) return json({ error: 'forbidden' }, 403)
 
-    const quota = await deps.consumeQuota(req, req.user.id, collection)
+    const quota = await deps.consumeQuota(req, auth.user.id, collection)
     if (!quota.allowed) {
       return json(
         { error: 'rate_limited', message: `Limit of ${quota.limit} questions per hour reached.` },

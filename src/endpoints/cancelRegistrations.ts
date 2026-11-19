@@ -1,8 +1,9 @@
 import { addDataAndFileToRequest, type Endpoint } from 'payload'
 import { z } from 'zod'
 
-import { userIsStaff } from '@/access/roles'
 import { cancelRegistrations } from '@/services/registrations'
+
+import { requireStaff } from './guards'
 
 const bodySchema = z.object({
   ids: z
@@ -11,13 +12,12 @@ const bodySchema = z.object({
     .max(500, 'Cancel at most 500 registrations at a time.'),
 })
 
-// Custom endpoints get no automatic access control.
 export const cancelRegistrationsEndpoint: Endpoint = {
   path: '/cancel',
   method: 'post',
   handler: async (req) => {
-    if (!req.user) return Response.json({ error: 'unauthorized' }, { status: 401 })
-    if (!userIsStaff(req.user)) return Response.json({ error: 'forbidden' }, { status: 403 })
+    const auth = requireStaff(req)
+    if (!auth.ok) return auth.response
 
     await addDataAndFileToRequest(req)
     const parsed = bodySchema.safeParse(req.data)
