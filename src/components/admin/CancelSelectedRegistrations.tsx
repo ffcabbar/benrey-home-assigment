@@ -46,7 +46,10 @@ export function CancelSelectedRegistrations() {
       for (const id of ids) setSelection(id)
       router.refresh()
     } catch {
-      toast.error('Network error: nothing was cancelled.')
+      // The request may have reached the server before the connection dropped, so don't claim
+      // either outcome. No automatic refresh: it would fail the same way while offline.
+      // Retrying is safe, already cancelled rows are skipped.
+      toast.error("We couldn't confirm the result. Reload the list to check the selected registrations before retrying.")
     } finally {
       setBusy(false)
     }
