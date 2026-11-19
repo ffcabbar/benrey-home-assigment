@@ -27,6 +27,9 @@ const eslintConfig = [
     ignores: [
       '.next/',
       'coverage/',
+      '.e2e/',
+      'playwright-report/',
+      'test-results/',
       'src/payload-types.ts',
       'src/payload-generated-schema.ts',
       'src/app/(payload)/admin/importMap.js',

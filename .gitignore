@@ -18,6 +18,10 @@ next-env.d.ts
 # testing
 /coverage
 /test-results/
+/playwright-report/
+/blob-report/
+# E2E fixture credentials (generated per run)
+/.e2e/
 
 # local media (uploads go to S3; this is a safety net)
 /media
