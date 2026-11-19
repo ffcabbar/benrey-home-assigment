@@ -29,9 +29,18 @@ export default buildConfig({
   cors: [serverURL],
   admin: {
     user: Users.slug,
-    meta: { titleSuffix: ' · Event Registration' },
+    meta: {
+      titleSuffix: ' · Event Registration',
+      description: 'Admin for conference events, sessions, attendees and seat-limited registrations.',
+      openGraph: {
+        title: 'Event Registration admin',
+        description: 'Admin for conference events, sessions, attendees and seat-limited registrations.',
+        siteName: 'Event Registration',
+      },
+    },
     importMap: { baseDir: path.resolve(dirname) },
     components: {
+      graphics: { Logo: '@/components/admin/Logo#Logo' },
       actions: ['@/components/admin/LogoutAction#LogoutAction'],
       providers: ['@/components/admin/FieldHelpProvider#FieldHelpProvider'],
     },
