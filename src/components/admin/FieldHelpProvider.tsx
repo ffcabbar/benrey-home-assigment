@@ -1,17 +1,39 @@
 'use client'
 
-import { useConfig } from '@payloadcms/ui'
+import { useConfig, useModal } from '@payloadcms/ui'
 import { usePathname } from 'next/navigation'
 import React, { useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 
-import { FIELD_HELP_COLLECTIONS } from '@/ai/rules'
+import { resolveFieldHelpCollection, topDocumentDrawer } from './fieldHelpTarget'
 
 export function FieldHelpProvider({ children }: { children?: React.ReactNode }) {
-  const slug = useCollectionSlug()
+  const pathname = usePathname()
+  const { modalState } = useModal()
+  const {
+    config: {
+      routes: { admin },
+    },
+  } = useConfig()
+  const slug = resolveFieldHelpCollection({ pathname, adminRoute: admin, modalState })
+  const drawerKey = topDocumentDrawer(modalState)?.key ?? null
+
+  // A drawer covers the page and traps focus, so the widget has to live inside it to be usable.
+  // The drawer element is mounted in the same commit that opens it, so look it up a frame later.
+  const [drawerElement, setDrawerElement] = useState<HTMLElement | null>(null)
+  useEffect(() => {
+    if (!drawerKey) return
+    const frame = requestAnimationFrame(() => setDrawerElement(document.getElementById(drawerKey)))
+    return () => cancelAnimationFrame(frame)
+  }, [drawerKey])
+  const portalTarget = drawerKey && drawerElement?.id === drawerKey ? drawerElement : null
+
+  const widget = slug ? <FieldHelpWidget key={`${drawerKey ?? 'page'}:${slug}`} slug={slug} /> : null
+  if (!drawerKey) return <>{children}{widget}</>
   return (
     <>
       {children}
-      {slug ? <FieldHelpWidget key={slug} slug={slug} /> : null}
+      {portalTarget && widget ? createPortal(widget, portalTarget) : null}
     </>
   )
 }
@@ -23,20 +45,6 @@ type State =
   | { kind: 'loading' }
   | { kind: 'answer'; text: string }
   | { kind: 'notice'; text: string }
-
-const useCollectionSlug = (): string | null => {
-  const pathname = usePathname()
-  const {
-    config: {
-      routes: { admin },
-    },
-  } = useConfig()
-  if (!pathname) return null
-  const prefix = `${admin === '/' ? '' : admin}/collections/`
-  if (!pathname.startsWith(prefix)) return null
-  const slug = pathname.slice(prefix.length).split('/')[0]
-  return (FIELD_HELP_COLLECTIONS as readonly string[]).includes(slug) ? slug : null
-}
 
 function FieldHelpWidget({ slug }: { slug: string }) {
   const {
@@ -56,6 +64,9 @@ function FieldHelpWidget({ slug }: { slug: string }) {
 
   const ask = async (event: React.FormEvent) => {
     event.preventDefault()
+    // Inside a drawer the widget is portalled into Payload's dialog, and React lets this submit
+    // reach the document form behind the drawer, which would save that document.
+    event.stopPropagation()
     const trimmed = question.trim()
     if (!trimmed || state.kind === 'loading') return
     setState({ kind: 'loading' })
