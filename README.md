@@ -47,7 +47,9 @@ flowchart LR
 ```
 
 Business rules are pure functions in `src/domain/registration`. Hooks load data, call a rule and
-throw its message. Access rules live in `src/access/roles.ts`.
+throw its message; each hook is a named function next to its collection. Access rules live in
+`src/access/roles.ts`, and every custom endpoint starts with `requireStaff` from
+`src/endpoints/guards.ts`.
 
 ## Why this stack
 
@@ -98,8 +100,14 @@ offline and the field descriptions still explain the form.
 
 ## Tests
 
-`pnpm test` runs 82 unit tests with no network. `pnpm test:int` runs 56 integration tests against
+`pnpm test` runs 90 unit tests with no network. `pnpm test:int` runs 56 integration tests against
 Docker Postgres and MinIO, including parallel races for the last seat and for overlapping bookings.
+
+`pnpm test:e2e` runs 6 Playwright tests in Chromium against a production build on port 3100 with
+its own `benrey_e2e` database, so `pnpm dev` and its data are untouched. They cover the role
+difference, editing a session inside its event, the help widget inside that drawer (the AI call
+is stubbed), "Session is full", bulk cancel, and a connection lost during bulk cancel. Run
+`pnpm exec playwright install chromium` once. To watch it: `E2E_SLOWMO=500 pnpm test:e2e --headed`.
 
 ## Skipped
 
@@ -109,4 +117,4 @@ until an admin assigns one); check-in and payments.
 ## With more time
 
 A trigger-maintained seat counter, rules 3 and 5 in the database, saved filter presets, bulk
-cancel across pages, an audit log, and Playwright tests in CI.
+cancel across pages, an audit log, and the Playwright suite in CI.
