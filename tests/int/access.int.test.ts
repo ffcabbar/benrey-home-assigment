@@ -132,6 +132,9 @@ describe('staff can do day-to-day work', () => {
   it('rejects an invalid cancel request body', async () => {
     expect((await rest('POST', '/registrations/cancel', { token: staffToken, body: { ids: [] } })).status).toBe(400)
     expect((await rest('POST', '/registrations/cancel', { token: staffToken, body: { ids: ['1; DROP'] } })).status).toBe(400)
+    // Beyond Postgres `integer`: refused up front instead of failing in the database.
+    expect((await rest('POST', '/registrations/cancel', { token: staffToken, body: { ids: ['99999999999'] } })).status).toBe(400)
+    expect((await rest('POST', '/registrations/cancel', { token: staffToken, body: { ids: [2_147_483_648] } })).status).toBe(400)
   })
 })
 

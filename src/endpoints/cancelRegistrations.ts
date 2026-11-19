@@ -5,9 +5,15 @@ import { cancelRegistrations } from '@/services/registrations'
 
 import { requireStaff } from './guards'
 
+// Ids are Postgres `integer`s: a larger number would make the query fail with a 500.
+const POSTGRES_INT_MAX = 2_147_483_647
+const registrationId = z
+  .union([z.number(), z.string().regex(/^\d{1,10}$/).transform(Number)])
+  .pipe(z.number().int().positive().max(POSTGRES_INT_MAX))
+
 const bodySchema = z.object({
   ids: z
-    .array(z.union([z.number().int().positive(), z.string().regex(/^\d+$/)]))
+    .array(registrationId)
     .min(1, 'Select at least one registration.')
     .max(500, 'Cancel at most 500 registrations at a time.'),
 })
