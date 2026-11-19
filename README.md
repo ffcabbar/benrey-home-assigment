@@ -1,120 +1,210 @@
 # Event Registration admin
 
-An admin app for conference events, sessions, attendees and seat-limited registrations, built on
-Payload 3 inside Next.js with Postgres and S3 storage.
+Admin panel for conference events, sessions, attendees and seat-limited registrations. Payload 3 on
+Next.js, Postgres and S3 storage on Supabase, deployed on Vercel.
 
-Live: https://benrey-home-assigment.vercel.app/admin. Admin and staff logins are sent with the
-submission.
+Live: https://benrey-home-assigment.vercel.app/admin (admin and staff logins are in the email).
 
-## Local setup
+## Run locally
 
-Requires Node 24, pnpm 10 and Docker.
+Node 24, pnpm 10 and Docker.
 
 ```bash
 docker compose up -d       # Postgres on :54329, MinIO on :9000
 cp .env.example .env       # set PAYLOAD_SECRET to `openssl rand -hex 32`
 pnpm install
 pnpm migrate
-pnpm seed --reset          # 2 users, 30 events, ~160 sessions, 2,000 attendees, ~8,000 registrations
+pnpm seed --reset          # 30 events, ~160 sessions, 2,000 attendees, ~8,000 registrations
 pnpm dev                   # http://localhost:3000/admin, logins from SEED_* in .env
 ```
 
 ## Deploy
 
-1. Supabase: create a project, a private Storage bucket and S3 access keys.
-2. From your machine, with `DATABASE_URL` set to the session pooler (5432) or direct URL plus the
-   S3, `PAYLOAD_SECRET` and `SEED_*` variables, run `pnpm migrate` and then `pnpm seed --reset`
-   (30–60 minutes against a remote database: every write is a network round trip). Seed before the app goes live: on an empty database
-   the first account registered becomes admin.
-3. Vercel: import the repo and set `DATABASE_URL` (transaction pooler, 6543), `PAYLOAD_SECRET`, the
-   five `S3_*` variables, `NEXT_PUBLIC_SERVER_URL` and optionally `ANTHROPIC_API_KEY`. Deploy.
-   Later schema changes: run `pnpm migrate` the same way, or set `PAYLOAD_MIGRATE_ON_INIT=true`.
-4. Share the production URL only. CSRF and CORS accept `NEXT_PUBLIC_SERVER_URL` alone, so logins
-   fail on preview URLs.
+1. Supabase: create a project, a private Storage bucket and S3 keys.
+2. Run `pnpm migrate` and `pnpm seed --reset` from your machine against the session pooler
+   (port 5432). The remote seed takes 30–60 minutes. Seed before going live: on an empty database
+   the first account to sign up becomes admin.
+3. Vercel: import the repo and set `DATABASE_URL` (transaction pooler, port 6543),
+   `PAYLOAD_SECRET`, the `S3_*` variables, `NEXT_PUBLIC_SERVER_URL` and optionally
+   `ANTHROPIC_API_KEY`.
 
-The build needs no secrets. The server, CLI, seed and tests refuse to start when a required
-variable is missing.
+Secrets live only in Vercel and in a local `.env`, and the app won't start if one is missing.
+Logins only work on `NEXT_PUBLIC_SERVER_URL`, not on preview URLs (CSRF and CORS).
+
+## Why Payload
+
+The brief asks for the framework's built-in admin, and TypeScript is my main language, so I picked
+Payload 3. It builds the admin from TypeScript config and gives me auth, field-level access and
+hooks. It runs inside Next.js, so the whole app is one deploy. The seat limit needs row locks, so I
+wanted Postgres; Supabase gives me Postgres and S3 storage in one place.
+
+Without a deadline I would split it: a NestJS API and a client-only admin with React Admin,
+TanStack Query and Vite. An internal admin doesn't need SSR or SEO, and a separate API is easier to
+test and scale. For login I would use Better Auth with OAuth, and new OAuth users would get no role
+until an admin approves them.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-  UI[Payload admin] --> P[Payload: collections, access, hooks]
-  W[Help widget] --> E[POST /api/field-help] --> C[[Claude API]]
-  P --> D[Domain rules]
-  P --> DB[(Postgres: triggers, partial unique index)]
-  P --> S3[(S3 bucket)]
+  B[Browser: Payload admin + help widget] -->|HTTPS, HTTP-only cookie| V
+  subgraph V[Vercel: one Next.js app]
+    API[Payload REST API: auth, access, hooks]
+    D[Domain rules: plain functions]
+    EP[Custom endpoints: field-help, bulk cancel]
+  end
+  API --> D
+  API -->|transaction pooler| DB[(Supabase Postgres)]
+  API -->|S3 API, private bucket| S3[(Supabase Storage)]
+  EP --> C[[Anthropic API]]
 ```
 
-Business rules are pure functions in `src/domain/registration`. Hooks load data, call a rule and
-throw its message; each hook is a named function next to its collection. Access rules live in
-`src/access/roles.ts`, and every custom endpoint starts with `requireStaff` from
-`src/endpoints/guards.ts`.
+The important part is the seat limit. When staff save a registration, a hook checks the rules and
+returns a clear error like "Session is full". Then a Postgres trigger locks the session row and
+counts again, so if two people take the last seat at the same moment, only one gets it. The hook
+gives the message; the database decides the race.
 
-## Why this stack
+Rules are plain functions in `src/domain/registration`; access rules are in `src/access/roles.ts`.
 
-Payload generates the admin from TypeScript config and includes auth, field-level access and
-hooks. Django admin would add a Python backend; Strapi and Directus are harder to shape into
-role-specific, rule-heavy screens; AdminJS leaves the ORM and auth to wire by hand. Running Payload
-inside Next.js gives one deployable, Drizzle comes with Payload's Postgres adapter, and Supabase
-provides Postgres and S3 storage from one vendor. Cloudflare D1 was ruled out because SQLite has
-no row locks for the capacity rule.
+## Data model
 
-Trade-off under time pressure: "seats left" is a `COUNT` per session row on read. That is fine
-for lists of 50; a counter maintained by the trigger would scale better.
+```mermaid
+erDiagram
+  events ||--o{ sessions : "has"
+  media |o--o{ events : "banner of"
+  sessions ||--o{ registrations : "booked through"
+  attendees ||--o{ registrations : "books"
+  users |o--o{ registrations : "created by"
+  users ||--o{ ai_usage : "asks"
 
-Beyond the brief, on purpose: the database constraints, because capacity under concurrency is the
-real correctness risk. The rest is kept small to pay for it: no waitlist, public site or emails.
+  events {
+    int id PK
+    text title
+    text slug UK
+    enum status "draft, published, cancelled"
+    timestamptz starts_at "CHECK ends_at > starts_at"
+    timestamptz ends_at
+    text venue
+    text description
+    int banner_id FK "media, optional"
+  }
+  sessions {
+    int id PK
+    int event_id FK
+    text title
+    text display_title "Session — Event, indexed"
+    text room
+    timestamptz starts_at "inside the event"
+    timestamptz ends_at
+    int capacity "CHECK whole number >= 1"
+  }
+  attendees {
+    int id PK
+    text full_name
+    text email UK
+    text company
+  }
+  registrations {
+    int id PK
+    int attendee_id FK
+    int session_id FK
+    enum status "confirmed, cancelled"
+    timestamptz registered_at
+    timestamptz cancelled_at
+    int created_by_id FK "users"
+    text label "Attendee → Session — Event"
+  }
+  media {
+    int id PK
+    text alt
+    text filename "file lives in S3"
+    text mime_type "JPEG, PNG, WebP"
+    int filesize "max 2 MB"
+  }
+  users {
+    int id PK
+    text email UK
+    text name
+    enum role "admin, staff"
+    text hash "password hash"
+  }
+  ai_usage {
+    int id PK
+    int user_id FK
+    text collection_slug
+    timestamptz created_at "20 per user per hour"
+  }
+```
 
-## Business rules
+`registrations` is the many-to-many between attendees and sessions. It's a real table, not just a
+join table, because each booking has a status, dates and the person who created it. Seats left and
+session counts are calculated when read, not stored.
 
-| # | Rule | Enforced by |
+## Rules
+
+| # | Rule | Checked in |
 |---|---|---|
-| 1 | Confirmed registrations ≤ capacity | hook + trigger with a session row lock |
-| 2 | No overlapping confirmed sessions per attendee | hook + trigger with an attendee row lock |
-| 3 | Only published events, sessions not ended | hook |
-| 4 | Capacity can't drop below confirmed count | hook + trigger |
-| 5 | Session inside its event | hook |
-| 6 | Cancel is one-way; attendee and session fixed | hook + trigger |
-| 7 | One confirmed registration per attendee and session | hook + partial unique index |
-
-Database errors map back to the hook's message, for example "Session is full".
+| 1 | Confirmed registrations ≤ capacity | hook + database (session row lock) |
+| 2 | An attendee can't be in two overlapping sessions | hook + database (attendee row lock) |
+| 3 | Only published events, only sessions that haven't ended | hook |
+| 4 | Capacity can't go below the confirmed count | hook + database |
+| 5 | A session stays inside its event's dates | hook |
+| 6 | Cancelling is final | hook + database |
+| 7 | A registration's attendee and session can't change | hook + field access |
+| 8 | One confirmed registration per attendee and session | hook + unique index |
 
 ## Roles
 
-| Collection | Admin | Staff |
+| | Admin | Staff |
 |---|---|---|
-| Users | full; can't delete self or the last admin | own account only |
-| Events, sessions, images | full | read |
-| Attendees | full | create, update |
-| Registrations | full | create, cancel |
+| Users | everything, but can't delete themselves or the last admin | own account only |
+| Events, sessions, images | everything | read only |
+| Attendees | everything | create, edit |
+| Registrations | everything | create, cancel |
+
+Staff don't see the Users menu at all, and the API refuses anything the UI hides.
 
 ## AI helper
 
-The widget sends a collection name and a question. The server builds the context from the
-Payload config and the user's own permissions: field labels, types, limits, descriptions and the
-collection's rules. One request goes to Claude Opus 5.5 at low effort through the Anthropic SDK,
-about a cent or two per question. Each user gets 20 questions an hour; the API key's spend limit is
-the hard cap. Without a key, or when the call fails or times out (16 s), the widget says it is
-offline and the field descriptions still explain the form.
+The "Ask about this form" button sends the question and the form's name. The server builds the
+prompt from that form's real field definitions, its rules and what this user is allowed to do. No
+record data goes to the model. It's one call to Claude Opus 5.5 at low effort, limited to 20
+questions per user per hour, and the API key has a spend limit. If there's no key, or the call fails
+or takes more than 16 seconds, the widget says it's offline and the admin keeps working.
+
+There is no separate moderation step yet. The risk is small: the model only sees form definitions
+and has no tools, so a bad prompt can't leak data or change anything. For a public-facing version
+I would check the question first with a guardrail such as Amazon Bedrock Guardrails.
 
 ## Tests
 
-`pnpm test` runs 90 unit tests with no network. `pnpm test:int` runs 56 integration tests against
-Docker Postgres and MinIO, including parallel races for the last seat and for overlapping bookings.
+- `pnpm test`: 95 unit tests for the rules, the AI prompt and its error handling, and a check that
+  the diagram above matches the schema.
+- `pnpm test:int`: 56 tests against real Postgres and MinIO, including two requests racing for the
+  last seat.
+- `pnpm test:e2e`: 6 Playwright tests in Chromium on their own database and port, so they don't
+  touch `pnpm dev`. Run `pnpm exec playwright install chromium` once; to watch them,
+  `E2E_SLOWMO=500 pnpm test:e2e --headed`.
 
-`pnpm test:e2e` runs 6 Playwright tests in Chromium against a production build on port 3100 with
-its own `benrey_e2e` database, so `pnpm dev` and its data are untouched. They cover the role
-difference, editing a session inside its event, the help widget inside that drawer (the AI call
-is stubbed), "Session is full", bulk cancel, and a connection lost during bulk cancel. Run
-`pnpm exec playwright install chromium` once. To watch it: `E2E_SLOWMO=500 pnpm test:e2e --headed`.
+## Trade-offs
+
+- **Seats left is counted on every read.** Simple and always correct, but each row in a list costs
+  a query. A counter column updated by the trigger would scale better.
+- **The seat and overlap rules live in both the hook and the database.** That's some duplication,
+  but I get clear error messages and correctness under concurrency.
+- **Images go through the app**, so only signed-in staff can see them. The cost is no CDN caching.
+- **The AI rate limit is a Postgres table.** No extra service to run, but it isn't atomic; the API
+  key's spend limit is the real cap.
 
 ## Skipped
 
-Waitlist; public sign-up or public API; email sending; OAuth (new OAuth users would get no role
-until an admin assigns one); check-in and payments.
+Waitlist, public sign-up, emails (so no password reset by email; an admin sets a new password),
+OAuth, check-in and payments. The brief is about the admin, so I spent the time on the seat-limit
+race instead.
 
 ## With more time
 
-A trigger-maintained seat counter, rules 3 and 5 in the database, saved filter presets, bulk
-cancel across pages, an audit log, and the Playwright suite in CI.
+A stored seat counter, rules 3 and 5 in the database, Sentry and Better Stack for errors and logs
+(today they only go to Vercel's runtime logs), a moderation step in front of the AI helper, images
+through a CDN, bulk actions across pages, an audit log, Playwright in CI, and the NestJS + React
+Admin split described above.
